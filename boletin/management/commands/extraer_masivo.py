@@ -56,7 +56,7 @@ class Command(BaseCommand):
 
                     for item in items:
                         try:
-                            # 1. PREVENCIÓN ERROR NONETYPE (Estructura HTML incompleta)
+                            # 1. PREVENCIÓN ERROR NONETYPE
                             title_el = item.query_selector('.item-title')
                             text_el = item.query_selector('.item-text')
                             
@@ -81,7 +81,7 @@ class Command(BaseCommand):
                                 tipo_juicio = fragmentos[0][:150] if len(fragmentos) > 0 else "Sin especificar"
                                 partes = fragmentos[1][:255] if len(fragmentos) > 1 else None
                             else:
-                                # Si no hay patrón (ej. "EXHORTO"), truncamos agresivamente para salvar la BD
+                                # Si no hay patrón, truncamos agresivamente para salvar la BD
                                 num_expediente = raw_title[:50].strip()
                                 tipo_juicio = "Atípico / Especial"
                                 partes = None
