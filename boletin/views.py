@@ -225,37 +225,57 @@ def consultar_y_actualizar_bd(id_boletin, numero_expediente, fecha_hoy, acuerdos
         fecha_str = ultimo_acuerdo.fecha_acuerdo.strftime("%d-%m-%Y") if ultimo_acuerdo else fecha_hoy.strftime("%d-%m-%Y")
         return {"hubo_cambio": False, "estado_actual": ultimo_acuerdo.texto if ultimo_acuerdo else "Sin extracto.", "fecha_ultimo_acuerdo": fecha_str}
 
+
+
 # =======================================================
-# ENDPOINT 1: Consulta Individual
+# ENDPOINT 1: Consulta Individual (Con salvavidas de caché)
 # =======================================================
 async def consultar_expediente(request):
     numero_expediente = request.GET.get('expediente')
     id_juzgado_param = request.GET.get('id_juzgado')
     pedir_todo = request.GET.get('todo', 'false').lower() == 'true'
 
-    if not numero_expediente or not id_juzgado_param: return JsonResponse({"error": "Faltan parámetros."}, status=400)
+    if not numero_expediente or not id_juzgado_param: 
+        return JsonResponse({"error": "Faltan parámetros."}, status=400)
 
     id_boletin = await obtener_id_juzgado(id_juzgado_param, None)
-    if not id_boletin: return JsonResponse({"error": "Juzgado no válido."}, status=404)
+    if not id_boletin: 
+        return JsonResponse({"error": "Juzgado no válido."}, status=404)
 
     fecha_hoy = datetime.now().date()
+    
+    # 1. CONTROL DE CACHÉ INTERNO DIARIO
     expediente_obj, requiere_scraping = await verificar_cache_o_registrar(id_boletin, numero_expediente, fecha_hoy)
     
     if not requiere_scraping:
+        # Recuperamos lo que haya en la base de datos local
         respuesta = await obtener_historial_local(expediente_obj, pedir_todo)
-        return JsonResponse(respuesta, status=404 if "error" in respuesta else 200)
+        
+        # SALVAVIDAS: Si la caché dice que ya se revisó hoy, pero la BD está vacía 
+        # (por una purga manual), ignoramos la caché y forzamos el scraping.
+        if "error" in respuesta:
+            print(f"[CACHÉ INVALIDADA] Se detectó expediente revisado hoy pero sin acuerdos locales. Forzando scraping profundo...")
+            requiere_scraping = True
+        else:
+            return JsonResponse(respuesta, status=200)
 
-    acuerdos_extraidos, raw_title = [], ""
+    # 2. LANZAMOS EL SCRAPER DE PLAYWRIGHT SI ES NECESARIO
+    acuerdos_extraidos = []
+    raw_title = ""
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             acuerdos_extraidos, raw_title = await extraer_expediente_profundo(page, id_boletin, numero_expediente)
             await browser.close()
-    except Exception as e: print(f"[ERROR] {e}")
+    except Exception as e: 
+        print(f"[ERROR Crítico Scraper Individual] {e}")
 
+    # 3. PROCESAMOS Y GUARDAMOS EN LA BD
     respuesta_final = await procesar_acuerdos_scraper(expediente_obj, acuerdos_extraidos, fecha_hoy, raw_title, pedir_todo)
     return JsonResponse(respuesta_final, status=404 if "error" in respuesta_final else 200)
+
+
 
 # =======================================================
 # ENDPOINT 2: Scraper Masivo 
