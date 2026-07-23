@@ -6,6 +6,8 @@ from playwright.async_api import async_playwright
 from .models import Juzgado, Expediente, Acuerdo
 from datetime import datetime
 import re
+from rest_framework import viewsets
+from .serializers import UsuarioSerializer
 
 # =======================================================
 # FUNCIONES DE BASE DE DATOS (HELPER)
