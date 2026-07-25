@@ -3,7 +3,7 @@ from .views import *
 from .apiviews import *
 from rest_framework.routers import DefaultRouter
 
-from django.conf import settings # <-- NUEVO
+from django.conf import settings
 from django.conf.urls.static import static 
 
 router = DefaultRouter()
@@ -12,6 +12,7 @@ router.register(r'juzgados', JuzgadoViewSet, basename='juzgado')
 router.register(r'expedientes', ExpedienteViewSet, basename='expediente')
 router.register(r'acuerdos', AcuerdoViewSet, basename='acuerdo')
 router.register(r'adjuntos', AdjuntoViewSet, basename='adjunto')
+router.register(r'notificaciones', NotificacionViewSet, basename='notificacion')
 
 urlpatterns = [
     path('api/consultar-expediente/', consultar_expediente, name='consultar_expediente'),

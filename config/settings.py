@@ -14,7 +14,21 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 SECRET_KEY = 'django-insecure-t0a60-%hr3q=5=97(7uwrna^ox@ywp4g!l#8vo9t*@)28q-&wy'
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['*']  # Permitir todos los hosts para desarrollo
+# Configuración CORS limpia y funcional para túneles dinámicos
+CORS_ALLOW_ALL_ORIGINS = True
+
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = default_headers + (
+    'authorization',
+) 
+
+# O si prefieres mantenerlo explícito, asegúrate de incluir exactamente la URL actual:
+CORS_ALLOWED_ORIGINS = [
+    "https://headset-litmus-irregular.ngrok-free.dev",
+    "https://moisture-innovations-periodically-provincial.trycloudflare.com",
+]
 
 
 # Application definition
@@ -43,6 +57,13 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# Configuración de cabeceras permitidas para que el Token no sea bloqueado
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = default_headers + (
+    'authorization',
+)
+
 ROOT_URLCONF = 'config.urls'
 CORS_ALLOW_ALL_ORIGINS = True
 AUTH_USER_MODEL = 'boletin.Usuario' 
@@ -50,6 +71,8 @@ AUTH_USER_MODEL = 'boletin.Usuario'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
+    ],'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
     ],
 }
 

@@ -17,6 +17,14 @@ class UsuarioManager(BaseUserManager):
         extra_fields.setdefault('is_superuser', True)
         return self.create_user(telefono, nombre, password, **extra_fields)
 
+
+# 1. Agrega esta función arriba de tu modelo Usuario
+def user_directory_path(instance, filename):
+    # El archivo se guardará en media/perfiles/usuario_<id>/<filename>
+    # Si la instancia no tiene ID aún (usuario nuevo), usamos 'nuevo'
+    user_id = instance.id if instance.id else 'nuevo'
+    return f'perfiles/usuario_{user_id}/{filename}'
+
 # CORRECCIÓN AQUÍ: Cambiamos models.Model por AbstractBaseUser y PermissionsMixin
 class Usuario(AbstractBaseUser, PermissionsMixin):
     nombre = models.CharField(max_length=150, verbose_name="Nombre Completo")
@@ -26,6 +34,8 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
         verbose_name="Teléfono (WhatsApp)",
         help_text="Incluir código de país sin signo + (Ej: 52133XXXXXXXX)"
     )
+    username = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    email = models.EmailField(unique=True, null=True, blank=True)
     esta_activo = models.BooleanField(default=True, verbose_name="Usuario Activo")
     notificaciones_activas = models.BooleanField(default=True, verbose_name="Notificaciones Habilitadas")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Fecha de Registro")
@@ -33,6 +43,7 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     # 2. Requeridos por Django para funcionar como usuario del sistema
     is_staff = models.BooleanField(default=False, verbose_name="Es Staff (Admin)")
     is_active = models.BooleanField(default=True, verbose_name="Activo en Sistema")
+    foto = models.ImageField(upload_to=user_directory_path, null=True, blank=True)
     
     # 3. Asignamos el Manager y configuramos el inicio de sesión
     objects = UsuarioManager()

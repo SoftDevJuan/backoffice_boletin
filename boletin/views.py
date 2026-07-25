@@ -6,6 +6,7 @@ from playwright.async_api import async_playwright
 from .models import Juzgado, Expediente, Acuerdo
 from datetime import datetime
 import re
+from .utils import procesar_notificaciones_lote
 from rest_framework import viewsets
 from .serializers import UsuarioSerializer
 
@@ -230,7 +231,7 @@ def consultar_y_actualizar_bd(id_boletin, numero_expediente, fecha_hoy, acuerdos
 
 
 # =======================================================
-# ENDPOINT 1: Consulta Individual (Con salvavidas de caché)
+# ENDPOINT 1: Consulta Individual (Orden directa sin caché)
 # =======================================================
 async def consultar_expediente(request):
     numero_expediente = request.GET.get('expediente')
@@ -246,22 +247,14 @@ async def consultar_expediente(request):
 
     fecha_hoy = datetime.now().date()
     
-    # 1. CONTROL DE CACHÉ INTERNO DIARIO
-    expediente_obj, requiere_scraping = await verificar_cache_o_registrar(id_boletin, numero_expediente, fecha_hoy)
-    
-    if not requiere_scraping:
-        # Recuperamos lo que haya en la base de datos local
-        respuesta = await obtener_historial_local(expediente_obj, pedir_todo)
-        
-        # SALVAVIDAS: Si la caché dice que ya se revisó hoy, pero la BD está vacía 
-        # (por una purga manual), ignoramos la caché y forzamos el scraping.
-        if "error" in respuesta:
-            print(f"[CACHÉ INVALIDADA] Se detectó expediente revisado hoy pero sin acuerdos locales. Forzando scraping profundo...")
-            requiere_scraping = True
-        else:
-            return JsonResponse(respuesta, status=200)
+    # 1. ASEGURAR EL EXPEDIENTE EN LA BASE DE DATOS
+    juzgado = await sync_to_async(Juzgado.objects.get)(id_boletin=id_boletin)
+    expediente_obj, _ = await sync_to_async(Expediente.objects.get_or_create)(
+        juzgado=juzgado, 
+        numero_expediente=numero_expediente
+    )
 
-    # 2. LANZAMOS EL SCRAPER DE PLAYWRIGHT SI ES NECESARIO
+    # 2. EXTRACCIÓN DIRECTA (Ignoramos si ya se revisó hoy, vamos siempre)
     acuerdos_extraidos = []
     raw_title = ""
     try:
@@ -273,10 +266,16 @@ async def consultar_expediente(request):
     except Exception as e: 
         print(f"[ERROR Crítico Scraper Individual] {e}")
 
-    # 3. PROCESAMOS Y GUARDAMOS EN LA BD
+    # 3. GUARDAMOS EN LA BD (Se insertará todo acuerdo histórico o nuevo que falte)
     respuesta_final = await procesar_acuerdos_scraper(expediente_obj, acuerdos_extraidos, fecha_hoy, raw_title, pedir_todo)
-    return JsonResponse(respuesta_final, status=404 if "error" in respuesta_final else 200)
+    
+    # 4. DISPARAMOS EL MOTOR DE NOTIFICACIONES
+    # Si la BD insertó aunque sea un acuerdo que no tenía, "hubo_cambio" será True
+    if type(respuesta_final) is dict and respuesta_final.get("hubo_cambio"):
+        print(f"[DEBUG INDIVIDUAL] Se insertó información faltante en la BD. Disparando notificaciones para {numero_expediente}")
+        await disparar_notificaciones_async(id_boletin, numero_expediente)
 
+    return JsonResponse(respuesta_final, status=404 if type(respuesta_final) is dict and "error" in respuesta_final else 200)
 
 
 # =======================================================
@@ -352,28 +351,12 @@ async def scraper_masivo(request):
 
                 if res_bd.get("hubo_cambio"):
                     resultados_actualizados.append({"expediente": exp_num, "actualizacion": res_bd})
-                    usuarios = await obtener_telefonos_suscritos(id_boletin, exp_num)
                     
-                    for usuario in usuarios:
-                        payload = {
-                            "nombre": usuario["nombre"], 
-                            "telefono": usuario["telefono"],
-                            "expediente": exp_num,
-                            "juzgado": id_juzgado_param,
-                            "fecha": res_bd["fecha_ultimo_acuerdo"],
-                            "nuevo_acuerdo": res_bd["estado_nuevo"]
-                        }
-                        
-                        print(f"[DEBUG HTTP] Enviando payload a FastAPI para {usuario['nombre']} ({usuario['telefono']})")
-                        try:
-                            response_fastapi = await asyncio.to_thread(
-                                requests.post, 
-                                "http://127.0.0.1:8000/api/notificar-actualizacion", 
-                                json=payload, 
-                                timeout=5
-                            )
-                        except Exception as e:
-                            print(f"[❌ DEBUG HTTP ERROR] Falló la conexión con FastAPI para exp {exp_num}: {e}")
+                    # AQUÍ REEMPLAZAMOS TODO LO DE FASTAPI: 
+                    # Disparamos nuestro propio motor de notificaciones en Django
+                    print(f"[DEBUG RADAR] Cambios guardados en BD. Disparando motor inteligente de notificaciones para {exp_num}")
+                    await disparar_notificaciones_async(id_boletin, exp_num)
+                    
                 else:
                     print(f"[DEBUG RADAR] Se omitió el envío HTTP para {exp_num} porque no se insertaron filas nuevas (duplicado local).")
 
@@ -392,3 +375,11 @@ async def scraper_masivo(request):
     except Exception as e: 
         print(f"[❌ DEBUG RADAR CRÍTICO] Excepción general en scraper_masivo: {e}")
         return JsonResponse({"error": str(e)}, status=500)
+
+
+@sync_to_async
+def disparar_notificaciones_async(id_boletin, numero_expediente):
+    # Buscamos el expediente de forma segura dentro del hilo síncrono
+    expediente = Expediente.objects.filter(juzgado__id_boletin=id_boletin, numero_expediente=numero_expediente).first()
+    if expediente:
+        procesar_notificaciones_lote(expediente)
