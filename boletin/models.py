@@ -104,6 +104,14 @@ class Expediente(models.Model):
 
     usuarios = models.ManyToManyField('Usuario', through='Suscripcion', related_name='expedientes_suscritos')
     created_at = models.DateTimeField(auto_now_add=True)
+    creador = models.ForeignKey(
+        Usuario, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='expedientes_creados'
+    )
+    
 
     class Meta:
         verbose_name = "Expediente"
@@ -143,10 +151,14 @@ class Acuerdo(models.Model):
     def __str__(self):
         return f"Acuerdo del {self.fecha_acuerdo} - Exp: {self.expediente.numero_expediente}"
 
-
 class Suscripcion(models.Model):
+    ESTATUS_CHOICES = [
+        ('activa', 'Activa'),
+        ('bloqueada', 'Bloqueada'),
+    ]
     usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE)
     expediente = models.ForeignKey(Expediente, on_delete=models.CASCADE)
+    estatus = models.CharField(max_length=20, choices=ESTATUS_CHOICES, default='activa')
     suscrito_el = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -155,7 +167,7 @@ class Suscripcion(models.Model):
         unique_together = ('usuario', 'expediente')
 
     def __str__(self):
-        return f"{self.usuario.nombre} -> {self.expediente.numero_expediente}"
+        return f"{self.usuario.nombre} -> {self.expediente.numero_expediente} ({self.estatus})"
 
 
 class Notificacion(models.Model):

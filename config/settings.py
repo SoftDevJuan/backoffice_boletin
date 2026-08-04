@@ -27,10 +27,10 @@ CORS_ALLOW_HEADERS = default_headers + (
 # O si prefieres mantenerlo explícito, asegúrate de incluir exactamente la URL actual:
 CORS_ALLOWED_ORIGINS = [
     "https://headset-litmus-irregular.ngrok-free.dev",
-    "https://moisture-innovations-periodically-provincial.trycloudflare.com",
+    "https://sherman-swap-shipment-communications.trycloudflare.com",
 ]
 
-
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # Application definition
 
 INSTALLED_APPS = [

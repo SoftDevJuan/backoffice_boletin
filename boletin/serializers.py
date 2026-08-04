@@ -43,27 +43,26 @@ class JuzgadoSerializer(serializers.ModelSerializer):
         model = Juzgado
         fields = '__all__'
 
-
-
 class ExpedienteSerializer(serializers.ModelSerializer):
     juzgado_nombre = serializers.CharField(source='juzgado.nombre', read_only=True)
     juzgado_materia = serializers.CharField(source='juzgado.materia', read_only=True)
-    
-    # Serializa la lista de usuarios asociados al expediente
-    usuarios_detalles = UsuarioSerializer(source='usuarios', many=True, read_only=True)
-    
-    # Devuelve True si el usuario autenticado actual ya está suscrito
-    suscrito_actualmente = serializers.SerializerMethodField()
+    estoy_suscrito = serializers.SerializerMethodField()
 
     class Meta:
         model = Expediente
-        fields = '__all__'
+        fields = [
+            'id', 'numero_expediente', 'juzgado', 'juzgado_nombre', 
+            'juzgado_materia', 'partes', 'tipo_juicio', 'creador', 
+            'created_at', 'estoy_suscrito'
+        ]
+        # SOLUCIÓN CRÍTICA: Bloqueamos 'creador' para que DRF no lo ponga en null
+        read_only_fields = ['creador', 'created_at'] 
 
-    def get_suscrito_actualmente(self, obj):
-        request = self.context.get('request')
-        if request and request.user.is_authenticated:
-            return obj.usuarios.filter(id=request.user.id).exists()
-        return False
+    def get_estoy_suscrito(self, obj):
+        user = self.context['request'].user
+        if user.is_anonymous:
+            return False
+        return Suscripcion.objects.filter(usuario=user, expediente=obj, estatus='activa').exists()
 
 class AdjuntoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -109,3 +108,14 @@ class NotificacionSerializer(serializers.ModelSerializer):
             'usuario_telefono',
             # 'leida',   # Actívalo si ya agregaste el campo a tu modelo
         ]
+
+class SuscripcionSerializer(serializers.ModelSerializer):
+    # Campos extraídos para facilitar la vista en el Frontend
+    expediente_numero = serializers.CharField(source='expediente.numero_expediente', read_only=True)
+    usuario_nombre = serializers.CharField(source='usuario.nombre', read_only=True)
+
+    class Meta:
+        model = Suscripcion
+        fields = ['id', 'usuario', 'usuario_nombre', 'expediente', 'expediente_numero', 'estatus', 'suscrito_el']
+        # Protegemos estos campos para que el usuario no pueda "auto-aprobarse" mandando un estatus falso
+        read_only_fields = ['usuario', 'estatus', 'suscrito_el']

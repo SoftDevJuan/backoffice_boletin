@@ -2,10 +2,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
-from rest_framework import status
+from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
 from .models import Expediente, Usuario, Juzgado, Notificacion, Acuerdo
-from rest_framework import viewsets
 from .serializers import *
 from .utils import *
 from django.db.models import Q
@@ -139,6 +138,9 @@ class JuzgadoViewSet(viewsets.ModelViewSet):
             )
             
         return queryset
+
+
+
 class ExpedienteViewSet(viewsets.ModelViewSet):
     serializer_class = ExpedienteSerializer
     permission_classes = [IsAuthenticated]
@@ -148,22 +150,37 @@ class ExpedienteViewSet(viewsets.ModelViewSet):
         print(f"\n[DEBUG DISPATCH] -----------------------------------------")
         print(f"[DEBUG DISPATCH] Método recibido: {request.method}")
         print(f"[DEBUG DISPATCH] Ruta solicitada: {request.path}")
-        print(f"[DEBUG DISPATCH] Usuario autenticado: {request.user} (is_staff: {getattr(request.user, 'is_staff', 'N/A')})")
+        print(f"[DEBUG DISPATCH] Usuario autenticado: {request.user}")
         print(f"[DEBUG DISPATCH] -----------------------------------------")
         return super().dispatch(request, *args, **kwargs)
 
     def get_serializer_context(self):
+        # ESTO ES CRUCIAL para que el Serializer pueda calcular 'estoy_suscrito'
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_staff or user.is_superuser:
-            queryset = Expediente.objects.all().select_related('juzgado').order_by('-created_at')
-        else:
-            queryset = Expediente.objects.filter(usuarios=user).select_related('juzgado').order_by('-created_at')
+        
+        # 1. Si el usuario no está autenticado, no debería ver nada
+        if not user.is_authenticated:
+             return Expediente.objects.none()
 
+        # 2. Leemos el rol de forma segura, evitando crasheos si es AnonymousUser
+        is_admin = getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False) or getattr(user, 'role', '') == 'admin'
+        
+        if is_admin:
+            queryset = Expediente.objects.all().order_by('-created_at')
+        else:
+            # Lógica para CLIENTE:
+            # Filtramos donde (Soy el creador) O (Tengo suscripción activa)
+            queryset = Expediente.objects.filter(
+                Q(creador=user) | 
+                Q(suscripcion__usuario=user, suscripcion__estatus='activa')
+            ).distinct().order_by('-created_at')
+
+        # Filtros de búsqueda para el dashboard
         juzgado_id = self.request.query_params.get('juzgado', None)
         search = self.request.query_params.get('search', None)
 
@@ -174,36 +191,50 @@ class ExpedienteViewSet(viewsets.ModelViewSet):
                 Q(numero_expediente__icontains=search) | 
                 Q(partes__icontains=search)
             )
+            
         return queryset
 
-    @action(detail=False, methods=['post'], url_path='gestionar-suscripcion')
-    def gestionar_suscripcion(self, request):
-        print("[DEBUG] ¡Entró a gestionar_suscripcion!")
-        
-        if not request.user.is_staff:
-            return Response({"error": "No autorizado."}, status=status.HTTP_403_FORBIDDEN)
-        
-        expediente_id = request.data.get('expediente_id')
-        usuario_id = request.data.get('usuario_id')
-        accion = request.data.get('accion')
+    # ==========================================
+    # NUEVO: BÚSQUEDA GLOBAL PARA SUSCRIPCIONES
+    # ==========================================
+    @action(detail=False, methods=['get'], url_path='buscar_global')
+    def buscar_global(self, request):
+        query = request.query_params.get('q', '')
+        if not query:
+            return Response([])
 
-        try:
-            expediente = Expediente.objects.get(id=expediente_id)
-            usuario = Usuario.objects.get(id=usuario_id)
-            
-            if accion == 'agregar':
-                expediente.usuarios.add(usuario)
-            elif accion == 'remover':
-                expediente.usuarios.remove(usuario)
-                
-            return Response({"message": "Suscripción actualizada correctamente."}, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        # Buscamos en TODOS los expedientes de la BD (sin importar si es el creador)
+        resultados = Expediente.objects.filter(
+            Q(numero_expediente__icontains=query) |
+            Q(partes__icontains=query)
+        ).select_related('juzgado').distinct()
+        
+        # Limitamos la info enviada para proteger los acuerdos y datos sensibles
+        data = resultados.values(
+            'id', 
+            'numero_expediente', 
+            'juzgado__nombre', # Se usa doble guion bajo para acceder al nombre en la FK
+            'tipo_juicio'
+        )
+        
+        # Damos formato para que React lo lea sin problemas
+        format_data = [
+            {
+                "id": item['id'],
+                "numero_expediente": item['numero_expediente'],
+                "juzgado_nombre": item['juzgado__nombre'],
+                "tipo_juicio": item['tipo_juicio']
+            } for item in data
+        ]
+        
+        return Response(format_data)
 
-    
+    # ==========================================
+    # ACTUALIZADO: SISTEMA DE SUSCRIPCIÓN ABIERTA
+    # ==========================================
     @action(detail=False, methods=['post'])
     def suscribir(self, request):
-        print("[DEBUG] ¡Entró a suscribir!")
+        print("[DEBUG] ¡Entró a suscribir abierto!")
         numero_expediente = request.data.get('numero_expediente')
         usuario = request.user
 
@@ -215,21 +246,105 @@ class ExpedienteViewSet(viewsets.ModelViewSet):
             if not expediente:
                 return Response({"error": "El expediente no se encuentra registrado."}, status=status.HTTP_404_NOT_FOUND)
 
-            # 1. Vinculamos al usuario con el expediente
-            expediente.usuarios.add(usuario)
-            
-            # 2. LA SOLUCIÓN A TU OBSERVACIÓN:
-            # Disparamos el motor inteligente en este instante. 
-            # Como este usuario es nuevo, la función detectará que le faltan TODOS los acuerdos 
-            # históricos y se los enviará en un solo bloque de bienvenida.
+            # 1. Buscamos o Creamos la Suscripción
+            suscripcion, created = Suscripcion.objects.get_or_create(
+                usuario=usuario,
+                expediente=expediente,
+                defaults={'estatus': 'activa'}
+            )
+
+            # 2. Validaciones de estado si la suscripción ya existía
+            if not created:
+                if suscripcion.estatus == 'bloqueada':
+                    return Response({"error": "El creador de este expediente ha revocado tu acceso."}, status=status.HTTP_403_FORBIDDEN)
+                elif suscripcion.estatus == 'activa':
+                    return Response({"message": "Ya estás suscrito y tienes acceso a este expediente."}, status=status.HTTP_200_OK)
+                else:
+                    # Por si había otro estado, la reactivamos
+                    suscripcion.estatus = 'activa'
+                    suscripcion.save()
+
+            # 3. Notificamos al creador del expediente original
+            creador_expediente = getattr(expediente, 'creador', None)
+            if creador_expediente and creador_expediente != usuario:
+                from .models import Notificacion
+                Notificacion.objects.create(
+                    usuario=creador_expediente,
+                    titulo="Nueva suscripción a tu expediente",
+                    mensaje=f"El usuario {usuario.nombre} se ha suscrito al expediente {expediente.numero_expediente}.",
+                    estatus="pendiente",
+                    tipo="suscripcion"
+                )
+
+            # 4. Disparamos tu motor inteligente para mandarle el historial de bienvenida
             try:
                 procesar_notificaciones_lote(expediente)
             except Exception as e:
                 print(f"Error al enviar historial a nuevo suscriptor: {e}")
 
-            return Response({"message": "Suscripción solicitada con éxito. Recibirás el historial en breve."}, status=status.HTTP_200_OK)
+            return Response({"message": "Te has suscrito con éxito al expediente. Recibirás el historial en breve."}, status=status.HTTP_200_OK)
+
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def perform_create(self, serializer):
+        # Guardamos el expediente asignando al usuario actual como creador
+        expediente = serializer.save(creador=self.request.user)
+        
+        # Como él lo creó, lo suscribimos automáticamente de forma activa
+        from .models import Suscripcion
+        Suscripcion.objects.create(
+            usuario=self.request.user,
+            expediente=expediente,
+            estatus='activa'
+        )
+
+    # ==========================================
+    # NUEVO: AGREGAR SUSCRIPTOR MANUALMENTE
+    # ==========================================
+    @action(detail=True, methods=['post'], url_path='agregar-suscriptor')
+    def agregar_suscriptor(self, request, pk=None):
+        expediente = self.get_object()
+        
+        # 1. Validar que quien intenta hacer esto sea el creador o un admin
+        is_admin = getattr(request.user, 'is_staff', False) or getattr(request.user, 'role', '') == 'admin'
+        if expediente.creador != request.user and not is_admin:
+            return Response({"error": "No tienes permiso para agregar usuarios a este expediente."}, status=status.HTTP_403_FORBIDDEN)
+            
+        credencial = request.data.get('credencial')
+        if not credencial:
+            return Response({"error": "Debes proporcionar un teléfono, email o usuario."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # 2. Buscar al usuario usando la misma técnica del login
+        try:
+            usuario_dest = Usuario.objects.get(
+                Q(telefono=credencial) | Q(email=credencial) | Q(username=credencial)
+            )
+        except Usuario.DoesNotExist:
+            return Response({"error": "No se encontró ningún usuario con ese dato en el sistema."}, status=status.HTTP_404_NOT_FOUND)
+            
+        # 3. Creamos o reactivamos la suscripción
+        from .models import Suscripcion
+        suscripcion, created = Suscripcion.objects.get_or_create(
+            usuario=usuario_dest,
+            expediente=expediente,
+            defaults={'estatus': 'activa'}
+        )
+        
+        if not created:
+            if suscripcion.estatus == 'activa':
+                return Response({"message": f"{usuario_dest.nombre} ya tiene acceso a este expediente."}, status=status.HTTP_200_OK)
+            else:
+                suscripcion.estatus = 'activa'
+                suscripcion.save()
+                
+        # 4. Disparamos tu motor inteligente para que le llegue el historial por WhatsApp
+        try:
+            procesar_notificaciones_lote(expediente)
+        except Exception as e:
+            print(f"Error al enviar historial al usuario agregado: {e}")
+            
+        return Response({"message": f"Acceso otorgado a {usuario_dest.nombre} con éxito."}, status=status.HTTP_200_OK)
 
 
         
@@ -380,4 +495,61 @@ class NotificacionViewSet(viewsets.ReadOnlyModelViewSet):
             "message": f"Reintento finalizado. Estatus: {nuevo_estatus}"
         }, status=status.HTTP_200_OK)
 
+class SuscripcionViewSet(viewsets.ModelViewSet):
+    serializer_class = SuscripcionSerializer
+    # 1. SOLUCIÓN: Exigimos token para evitar los crasheos de AnonymousUser
+    permission_classes = [IsAuthenticated] 
 
+    def get_queryset(self):
+        user = self.request.user
+        is_admin = getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False) or getattr(user, 'role', '') == 'admin'
+        
+        if is_admin:
+            return Suscripcion.objects.all()
+            
+        from .models import Expediente
+        expedientes_suscritos = Expediente.objects.filter(suscripcion__usuario=user, suscripcion__estatus='activa')
+        
+        return Suscripcion.objects.filter(
+            Q(expediente__creador=user) | 
+            Q(expediente__in=expedientes_suscritos)
+        ).distinct()
+
+    def perform_create(self, serializer):
+        suscripcion = serializer.save(usuario=self.request.user, estatus='activa')
+        creador_expediente = suscripcion.expediente.creador
+        
+        if creador_expediente and creador_expediente != self.request.user:
+            from .models import Notificacion 
+            Notificacion.objects.create(
+                usuario=creador_expediente,
+                titulo="Nueva Suscripción",
+                mensaje=f"{self.request.user.nombre} se ha suscrito a tu expediente {suscripcion.expediente.numero_expediente}.",
+                estatus="pendiente"
+            )
+
+    @action(detail=True, methods=['patch'])
+    def bloquear(self, request, pk=None):
+        suscripcion = self.get_object()
+        
+        # 2. SOLUCIÓN: Leemos el rol de forma segura usando getattr() para que no crashee
+        is_admin = getattr(request.user, 'is_staff', False) or getattr(request.user, 'role', '') == 'admin'
+        
+        if suscripcion.expediente.creador == request.user or is_admin:
+            suscripcion.estatus = 'bloqueada'
+            suscripcion.save()
+            return Response({'status': 'Acceso revocado exitosamente.'})
+        else:
+            return Response({'error': 'No tienes permiso para bloquear esta suscripción.'}, status=status.HTTP_403_FORBIDDEN)
+
+
+class RegistroAPIView(APIView):
+    permission_classes = [AllowAny] # Público, no requiere token
+
+    def post(self, request):
+        serializer = UsuarioSerializer(data=request.data)
+        if serializer.is_valid():
+            # Forzamos que la cuenta nazca inactiva
+            usuario = serializer.save(esta_activo=False)
+            return Response({"message": "Registro exitoso."}, status=status.HTTP_201_CREATED)
+        return Response({"error": "Datos inválidos o usuario ya existente."}, status=status.HTTP_400_BAD_REQUEST)

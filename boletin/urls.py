@@ -13,13 +13,14 @@ router.register(r'expedientes', ExpedienteViewSet, basename='expediente')
 router.register(r'acuerdos', AcuerdoViewSet, basename='acuerdo')
 router.register(r'adjuntos', AdjuntoViewSet, basename='adjunto')
 router.register(r'notificaciones', NotificacionViewSet, basename='notificacion')
+router.register(r'suscripciones', SuscripcionViewSet, basename='suscripciones')
 
 urlpatterns = [
     path('api/consultar-expediente/', consultar_expediente, name='consultar_expediente'),
     path('api/scraper-masivo/', scraper_masivo, name='scraper_masivo'),
     path('api/login/', LoginAPIView.as_view(), name='api-login'),
     path('api/dashboard/', DashboardStatsAPIView.as_view(), name='api-dashboard'),
-    
+    path('registro/', RegistroAPIView.as_view()),
     path('api/', include(router.urls))
 ]
 
